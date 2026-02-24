@@ -258,10 +258,20 @@ fn void? Uci.set_option(&self, String name, any value) => @pool()
 <* Return how many lines are calculated each time the engine is asked. Defaults to 1 when the key isn't present, per the spec. *>
 fn usz Uci.pvs(&self) => types::any_to_int(self.engine.options["MultiPV"].value, usz) ?? 1;
 
-fn void? Uci.drain(&self)
+fn void? Uci.drain(&self, char[]* into = null)
 {
+	char* store;
+	usz total_bytes;
+	if (into != null) store = allocator::new_array(self.allocator, char, 1023);
+	defer catch allocator::free(self.allocator, store);
 	char[1024] tmp;
-	while (tmp[..] = 0, self.engine.process.read_stdout(&tmp, 1023)! > 0) self.dlog("DRAIN> %s", (ZString)&tmp);
+	while (tmp[..] = 0, self.engine.process.read_stdout(&tmp, 1023)! > 0)
+	{
+		self.dlog("DRAIN> %s", (ZString)&tmp);
+		if (into != null) store[total_bytes:1023] = tmp[:1023];
+		total_bytes += ((ZString)&tmp).len();
+	}
+	if (into != null) *into = store[:total_bytes];
 }
 
 fn void? Uci.await(&self)
