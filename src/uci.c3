@@ -15,6 +15,7 @@ faultdef
 	NO_MOVES_FOUND,   // the engine couldn't find a valid move for the given position
 	NONEXISTENT_OPTION,   // the (case-INsensitive) option name to be set wasn't one given by the engine's start-up list
 	POSITION_REQUIRED,   // the `position` keyword has not yet been provided to the engine
+	SEARCH_INCOMPLETE,   // the async engine is still searching - you should use "join" first before attempting to get the best move result
 	UNEXPECTED_RESPONSE,   // an unexpected response was received from the engine based on its state
 ;
 
@@ -394,6 +395,7 @@ fn UciEvaluation? UciResultAsync.best(&self) @if (env::POSIX || env::WIN32)
 {
 	self.mutex.@in_lock()
 	{
+		if (self.searching) return SEARCH_INCOMPLETE~;
 		return self.r.best();
 	};
 }
@@ -425,7 +427,7 @@ fn UciResult? Uci.go(&self, Allocator allocator, UciSearchParams params, bool* s
 	bool stopped;
 	while (true)
 	{
-		if (!stopped && stop != null && *stop)
+		if (!stopped && stop != null && @volatile_load(*stop))
 		{
 			self.stop()!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
@@ -464,7 +466,7 @@ fn int _go_async_thread(void* _ctx) @local @if (env::POSIX || env::WIN32) => @po
 	UciEvaluation eval;
 	while (true)
 	{
-		if (!stopped && self.stop_flag != null && *self.stop_flag)
+		if (!stopped && self.stop_flag != null && @volatile_load(*self.stop_flag))
 		{
 			self.uci.stop()!!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
@@ -475,6 +477,7 @@ fn int _go_async_thread(void* _ctx) @local @if (env::POSIX || env::WIN32) => @po
 			self.uci.update_results(self.results, &eval);
 		};
 	}
+	self.searching = false;
 	return 0;
 }
 
@@ -501,6 +504,7 @@ fn void? _dispatch_go(Uci* uci, UciSearchParams* params) @local
 		if (params.depth > 0) go_cmd.appendf(" depth %d", params.depth);
 		if (params.nodes > 0) go_cmd.appendf(" nodes %d", params.nodes);
 		if (params.move_time > 0) go_cmd.appendf(" movetime %d", params.move_time);
+		if (!params.move_time && !params.depth) go_cmd.appendf(" infinite");
 		uci.send(go_cmd.str_view())!;
 	};
 }

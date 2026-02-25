@@ -8,7 +8,7 @@ fn void main(String[] args)
 {
 	if (args.len != 2)
 	{
-		io::eprintfn("USAGE:  %s [path-to-lc0]", args[0]);
+		io::eprintfn("USAGE:  %s {path-to-lc0}", args[0]);
 		return;
 	}
 	String leela_path = args[1];

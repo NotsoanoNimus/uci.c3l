@@ -19,7 +19,7 @@ fn void main(String[] args)
 {
 	if (args.len != 2)
 	{
-		io::eprintfn("USAGE:  %s [path-to-stockfish]", args[0]);
+		io::eprintfn("USAGE:  %s {path-to-stockfish}", args[0]);
 		return;
 	}
 	String stockfish_path = args[1];
