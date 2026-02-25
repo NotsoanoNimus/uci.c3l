@@ -11,6 +11,7 @@ faultdef
 	INFINITE_SEARCH,   // the search was going to block infinitely; not permitted
 	INVALID_OPTION,   // the engine sent an option that couldn't be parsed
 	INVALID_RESPONSE,   // the engine sent a response that couldn't be understood
+	INVALID_MOVE,   // the provided move is not in pure algebraic notation
 	MALFORMED_RESPONSE,   // the engine's response doesn't follow the UCI protocol, or doesn't make sense otherwise
 	MISSING_ID,   // the engine didn't identify itself
 	NO_MOVES_FOUND,   // the engine couldn't find a valid move for the given position
@@ -93,6 +94,7 @@ struct Uci
 	bool initialized;
 	bool debug;
 	OutStream debug_stream;
+	String position_str;
 }
 
 
@@ -192,6 +194,7 @@ fn void Uci.free(&self)
 	allocator::free(self.allocator, self.engine.command);
 	allocator::free(self.allocator, self.engine.name);
 	allocator::free(self.allocator, self.engine.author);
+	if (self.position_str.len > 0) self.position_str.free(self.allocator);
 	self.engine.options.free();
 	mem::zero_volatile(@as_char_view(*self));
 }
@@ -291,7 +294,10 @@ fn void? Uci.new_game(&self, String[] moves = {}, String fen = "") => @pool()
 {
 	self.send("ucinewgame")!;
 	self.drain()!;
+	self.await()!;
 	self.to_state(NEW_GAME)!;
+
+	if (self.position_str.len > 0) self.position_str.free(self.allocator);
 
 	DString position_str;
 	position_str.tinit();
@@ -300,19 +306,50 @@ fn void? Uci.new_game(&self, String[] moves = {}, String fen = "") => @pool()
 	{
 		position_str.appendf("fen %s", fen);
 	}
-	else if (moves.len > 0)
-	{
-		foreach (&move : moves) *move = move.trim();
-		String joined_moves = string::tjoin(moves, " ");
-		position_str.appendf("startpos moves %s", joined_moves);
-	}
 	else
 	{
 		position_str.append("startpos");
 	}
+	if (moves.len > 0)
+	{
+		foreach (&move : moves)
+		{
+			*move = move.trim();
+			if (!_is_pure_coordinate(*move)) return INVALID_MOVE~;
+		}
+		String joined_moves = string::tjoin(moves, " ");
+		position_str.appendf(" moves %s", joined_moves);
+	}
+	self.position_str = position_str.copy_str(self.allocator);
+	self.dlog("NEW-GAME position string: |%s|", self.position_str);
 	self.send(position_str.str_view())!;
 	self.to_state(HAS_POSITION)!;
+	self.drain()!;
 	self.await()!;
+}
+
+<*
+ Make a move from the current position in `position_str`. Note that each time the position is set in this manner,
+ the engine evaluates the position from the side-to-move.
+*>
+fn void? Uci.move(&self, String move, bool force = false) => @pool()
+{
+	if (self.engine.state != HAS_POSITION || !self.position_str.len) return POSITION_REQUIRED~;
+	if (!force && !_is_pure_coordinate(move)) return INVALID_MOVE~;
+
+	String[] tokens = self.position_str.tsplit(" ");
+	bool has_moves = array::contains(tokens, "moves");
+
+	DString newpos;
+	newpos.tinit();
+	newpos.append(self.position_str);
+	newpos.appendf(" %s%s", has_moves ? "" : "moves ", move);
+
+	self.dlog("MOVE position string: |%s|", self.position_str);
+	self.position_str.free(self.allocator);
+	self.position_str = newpos.copy_str(self.allocator);
+
+	self.send(self.position_str)!;
 }
 
 <* Search parameters to constrain the UCI engine's search for a next move. *>
@@ -730,7 +767,13 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 				@volatile_store(*stop, true);
 				@volatile_store(*error, true);
 				return "";
-			case "info": continue;
+			case "string":
+				if (tokens.len > 1)
+				{
+					self.dlog("ENGINE INFO: |%s|", string::tjoin(tokens[1..], " "));
+					return "";
+				}
+				continue;
 			case "score":
 				if (tokens.len < 3) { self.dlog("ERROR getting 'score' info: not enough tokens."); continue; }
 				if (tokens[1] == "cp")   // centipawns
@@ -775,7 +818,7 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
  <rank number>   ::= '1'|'2'|'3'|'4'|'5'|'6'|'7'|'8'
  <promoted to>   ::= 'q'|'r'|'b'|'n'
 *>
-fn bool _is_pure_coordinate(String token) @local => @pool()
+fn bool _is_pure_coordinate(String token) => @pool()
 {
 	const AsciiCharset FILE_LETTER = ascii::@create_set("abcdefgh");
 	const AsciiCharset RANK_NUMBER = ascii::@create_set("12345678");
