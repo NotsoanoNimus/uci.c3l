@@ -5,6 +5,7 @@ import std::io, std::thread, std::os::process, std::collections;
 
 faultdef
 	ALREADY_CALCULATING,   // the engine is already in the middle of calculating the best moves for a position
+	ENGINE_ERROR,   // the engine encountered an error
 	IMPOSSIBLE_STATE,   // the engine has transitioned, or attempted to transition to, an impossible state
 	TIMEOUT,   // initializing the engine consumed too many `readline` calls
 	INFINITE_SEARCH,   // the search was going to block infinitely; not permitted
@@ -209,9 +210,7 @@ fn void? Uci.stop(&self)
 {
 	if (self.engine.state != CALCULATING) return;
 	self.send("stop")!;
-	// self.await()!;
-	// self.drain()!;
-	// self.to_state(HAS_POSITION)!;
+	self.to_state(HAS_POSITION)!;
 }
 
 fn void? Uci.send(&self, String format, args...) => @pool()
@@ -381,6 +380,7 @@ struct UciResultAsync @if (env::POSIX || env::WIN32)
 	Thread worker;
 	Mutex mutex;
 	bool searching;
+	bool had_error;
 	bool* stop_flag;
 }
 
@@ -409,7 +409,6 @@ fn void? UciResultAsync.join(&self, bool no_sleep = false) @if (env::POSIX || en
 	if (!no_sleep) thread::sleep_ms(500);
 	self.stop_flag = &&true;
 	self.worker.join()!;
-	self.uci.stop()!;
 }
 
 <*
@@ -424,7 +423,7 @@ fn UciResult? Uci.go(&self, Allocator allocator, UciSearchParams params, bool* s
 		.results = allocator::new_array(allocator, UciEvaluation, self.pvs())[:self.pvs()],
 	};
 	UciEvaluation eval;
-	bool stopped;
+	bool stopped, error_set;
 	while (true)
 	{
 		if (!stopped && stop != null && @volatile_load(*stop))
@@ -432,7 +431,8 @@ fn UciResult? Uci.go(&self, Allocator allocator, UciSearchParams params, bool* s
 			self.stop()!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
 		}
-		if (r.best_move = self.read_info(&eval, stop), r.best_move != {}) break;
+		if (r.best_move = self.read_info(&eval, stop, &error_set), r.best_move != {}) break;
+		if (@volatile_load(error_set) == true) return ENGINE_ERROR~;
 		self.update_results(r.results, &eval);
 	}
 	return r;
@@ -471,7 +471,7 @@ fn int _go_async_thread(void* _ctx) @local @if (env::POSIX || env::WIN32) => @po
 			self.uci.stop()!!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
 		}
-		if (self.best_move = self.uci.read_info(&eval, self.stop_flag), self.best_move != {}) break;
+		if (self.best_move = self.uci.read_info(&eval, self.stop_flag, &self.had_error), self.best_move != {}) break;
 		self.mutex.@in_lock()
 		{
 			self.uci.update_results(self.results, &eval);
@@ -543,6 +543,7 @@ fn void? Uci.parse_response(&self, String response)
 
 	switch (tokens[0])
 	{
+		case "error": return ENGINE_ERROR~;
 		case "uciok": self.to_state(INITIALIZED)!;
 		case "readyok": self.to_state(READY)!;
 		case "id": @pool()
@@ -692,7 +693,7 @@ fn void Uci.update_results(&self, UciEvaluation[] results, UciEvaluation* with_e
 <*
  @param [&inout] into : "The `UciEvaluation` struct to populate."
 *>
-fn String Uci.read_info(&self, UciEvaluation* into, bool* stop) => @pool()
+fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => @pool()
 {
 	String line;
 	if (catch @try(line, self.scan_line(tmem))) return "<ERR>";
@@ -724,6 +725,11 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop) => @pool()
 		$endforeach
 		switch (id)
 		{
+			case "error":
+				self.dlog("The engine encountered an error and could not proceed.");
+				@volatile_store(*stop, true);
+				@volatile_store(*error, true);
+				return "";
 			case "info": continue;
 			case "score":
 				if (tokens.len < 3) { self.dlog("ERROR getting 'score' info: not enough tokens."); continue; }
