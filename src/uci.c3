@@ -384,8 +384,8 @@ struct UciEvaluation
 fn void UciEvaluation.free(&self, Allocator allocator)
 {
 	if (!self.dirty) return;
-	self.move.free(allocator);
-	foreach (c : self.continuation) c.free(allocator);
+	if (self.move.len > 0) self.move.free(allocator);
+	foreach (c : self.continuation) if (c.len > 0) c.free(allocator);
 }
 
 <* Contains a flat array of evaluation results, sliced based on the current MultiPV setting. *>
@@ -444,7 +444,10 @@ fn UciEvaluation? UciResultAsync.best(&self) @if (env::POSIX || env::WIN32)
 fn void? UciResultAsync.join(&self, bool no_sleep = false) @if (env::POSIX || env::WIN32)
 {
 	if (!no_sleep) thread::sleep_ms(500);
-	self.stop_flag = &&true;
+	self.mutex.@in_lock()
+	{
+		@volatile_store(self.stop_flag, &&true);
+	};
 	self.worker.join()!;
 }
 
@@ -463,14 +466,15 @@ fn UciResult? Uci.go(&self, Allocator allocator, UciSearchParams params, bool* s
 	bool stopped, error_set;
 	while (true)
 	{
-		if (!stopped && stop != null && @volatile_load(*stop))
+		eval = {};
+		if ((!stopped && stop != null && @volatile_load(*stop)) || @volatile_load(error_set))
 		{
 			self.stop()!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
+			if (@volatile_load(error_set)) return ENGINE_ERROR~;
 		}
 		if (r.best_move = self.read_info(&eval, stop, &error_set), r.best_move != {}) break;
-		if (@volatile_load(error_set) == true) return ENGINE_ERROR~;
-		self.update_results(r.results, &eval);
+		if (!@volatile_load(error_set)) self.update_results(r.results, &eval);
 	}
 	return r;
 }
@@ -503,18 +507,23 @@ fn int _go_async_thread(void* _ctx) @local @if (env::POSIX || env::WIN32) => @po
 	UciEvaluation eval;
 	while (true)
 	{
-		if (!stopped && self.stop_flag != null && @volatile_load(*self.stop_flag))
+		eval = {};
+		if ((!stopped && @volatile_load(self.stop_flag) != null && @volatile_load(*self.stop_flag)) || @volatile_load(self.had_error))
 		{
 			self.uci.stop()!!;
 			stopped = true; // send the 'stop' command when signaled, then keep consuming until `bestnove`
+			if (@volatile_load(self.had_error)) break;
 		}
 		if (self.best_move = self.uci.read_info(&eval, self.stop_flag, &self.had_error), self.best_move != {}) break;
-		self.mutex.@in_lock()
+		if (!@volatile_load(self.had_error)) self.mutex.@in_lock()
 		{
 			self.uci.update_results(self.results, &eval);
 		};
 	}
-	self.searching = false;
+	self.mutex.@in_lock()
+	{
+		@volatile_store(self.searching, false);
+	};
 	return 0;
 }
 
@@ -690,7 +699,16 @@ fn void Uci.dlog(&self, String format, args...)
 
 macro Uci.to_state(&self, EngineState new_state) => self.engine.state.transition(new_state);
 
-fn String? Uci.scan_line(&self, Allocator allocator, usz timeout = 0) => @pool()
+fn String? Uci.scan_line(&self, Allocator allocator, usz timeout = 0)
+{
+	if (allocator == tmem) return self._scan_line_impl(allocator, timeout);
+	@pool()
+	{
+		return self._scan_line_impl(allocator, timeout);
+	};
+}
+
+fn String? Uci._scan_line_impl(&self, Allocator allocator, usz timeout = 0)
 {
 	DString line;
 	line.tinit();
@@ -707,6 +725,7 @@ fn String? Uci.scan_line(&self, Allocator allocator, usz timeout = 0) => @pool()
 				if (subctr >= timeout && timeout > 0) return TIMEOUT~;
 				continue;
 			}
+			subctr = 0;   // reset on read char
 			if (b == '\r' || !b) continue;
 			if (b == '\n') break;
 			line.append_char(b);
@@ -729,11 +748,20 @@ fn void Uci.update_results(&self, UciEvaluation[] results, UciEvaluation* with_e
 
 <*
  @param [&inout] into : "The `UciEvaluation` struct to populate."
+ @param [&inout] error
 *>
 fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => @pool()
 {
 	String line;
-	if (catch @try(line, self.scan_line(tmem))) return "<ERR>";
+	if (catch err = @try(line, self.scan_line(tmem, timeout: 10)))
+	{
+		if (err != TIMEOUT)
+		{
+			if (stop != null) @volatile_store(*stop, true);
+			@volatile_store(*error, true);
+		}
+		return "";
+	}
 
 	if (line.len > 9 && line[:9] == "bestmove ")
 	{
@@ -764,7 +792,7 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 		{
 			case "error":
 				self.dlog("The engine encountered an error and could not proceed.");
-				@volatile_store(*stop, true);
+				if (stop != null) @volatile_store(*stop, true);
 				@volatile_store(*error, true);
 				return "";
 			case "string":
@@ -790,9 +818,17 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 				}
 				tokens = tokens[1..]; // extra shift to save one loop iteration
 			case "pv":
-				if (tokens.len < 2) { self.dlog("ERROR getting 'pv' info: not enough tokens."); continue; }
+				if (tokens.len < 2)
+				{
+					self.dlog("ERROR getting 'pv' info: not enough tokens.");
+					continue;
+				}
 				tokens = tokens[1..]; // shift
-				if (!_is_pure_coordinate(tokens[0])) { self.dlog("ERROR getting 'pv' move token: '%s' is not a valid coordinate.", tokens[0]); continue; }
+				if (!_is_pure_coordinate(tokens[0]))
+				{
+					self.dlog("ERROR getting 'pv' move token: '%s' is not a valid coordinate.", tokens[0]);
+					continue;
+				}
 				into.move = tokens[0].copy(self.allocator);
 				tokens = tokens[1..]; // shift
 				usz cont_count;
