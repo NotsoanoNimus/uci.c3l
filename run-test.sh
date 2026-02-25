@@ -18,3 +18,15 @@ fi
 
 c3c compile-run ${TEST_OPTS} ./test/stockfish.c3 -- "${STOCKFISH}" \
 	|| { echo "Stockfish test failed. Aborting." && exit 1; }
+
+
+LC0="${LC0:-./test/lc0/build/release/lc0}"
+echo -e "\n\n===== Attempting to test with Leela (lc0)..."
+if [[ ! -x ${LC0} ]]; then
+	echo "ERROR: Please install/update and compile Leela (lc0) in order to run tests."
+	echo
+	exit 1
+fi
+
+c3c compile-run ${TEST_OPTS} ./test/leela.c3 -- "${LC0}" \
+	|| { echo "Leela (lc0) test failed. Aborting." && exit 1; }
