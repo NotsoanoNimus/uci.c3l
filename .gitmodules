@@ -1,3 +1,6 @@
 [submodule "test/stockfish"]
 	path = test/stockfish
 	url = https://github.com/official-stockfish/Stockfish
+[submodule "test/lc0"]
+	path = test/lc0
+	url = https://github.com/LeelaChessZero/lc0
