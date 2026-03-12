@@ -78,7 +78,7 @@ fn void EngineOption.set_default(&self)
 struct ChessEngine
 {
 	String command;
-	SubProcess process;
+	Process process;
 	HashMap {String, EngineOption} options;
 	EngineStateMachine state;
 	String name;
@@ -125,15 +125,6 @@ fn Uci*? create(Allocator allocator, String engine_command, String[] args = {}, 
 		foreach (arg : args) cmd.appendf(` '%s'`, arg.treplace(`'`, `'\''`));
 	};
 
-	SubProcessOptions proc_opts = {
-		.combined_stdout_stderr = true,
-		.inherit_environment = true,
-		.read_async = true,
-		.no_window = true,
-		.search_user_path = true,
-		.inherit_stdio = false,
-	};
-
 	Uci* new_uci = allocator::new(allocator, Uci);
 	defer catch allocator::free(allocator, new_uci);
 
@@ -143,7 +134,7 @@ fn Uci*? create(Allocator allocator, String engine_command, String[] args = {}, 
 		.debug_stream = debug_stream,
 		.engine = {
 			.command = cmd.copy_str(allocator),
-			.process = process::create({ engine_command }, options: proc_opts)!,
+			.process = process::spawn({ engine_command }, options: STDERR_TO_STDOUT | INHERIT_ENV | ASYNC_OUTPUT | NO_WINDOW)!,
 			.options = {},
 			.state = STARTING,
 		},
@@ -220,7 +211,7 @@ fn void? Uci.send(&self, String format, args...) => @pool()
 {
 	// NOTE: no need to worry about the engine state here -- UCI is designed so that STDIN is always available to the child
 	String written = string::tformat(format, ...args);
-	self.engine.process.write_to_stdin(string::tformat("%s\n", written))!;
+	self.engine.process.write_stdin(string::tformat("%s\n", written))!;
 	self.dlog("U> %s", written);
 }
 
