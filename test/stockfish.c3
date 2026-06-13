@@ -12,7 +12,7 @@ fn void? Uci.show_board(&self)
 	thread::sleep_ms(200);
 	self.drain(into: &board)!;
 	io::printfn("BOARD STATE:\n%s", (String)board);
-	allocator::free(self.allocator, board);
+	alloc::free(self.allocator, board);
 }
 
 
@@ -30,7 +30,7 @@ fn void main(String[] args)
 	defer
 	{
 		fish.free();
-		allocator::free(mem, fish);
+		alloc::free(mem, fish);
 	}
 	fish.set_options({"Skill Level", &&3}, {"MultiPV", &&5})!!;
 	fish.new_game(fen: "8/2k2p2/2b3p1/P1p1Np2/1p3b2/1P1K4/5r2/R3R3 b - - 0 1")!!;

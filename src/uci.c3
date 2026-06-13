@@ -22,13 +22,13 @@ faultdef
 ;
 
 <* Only allow a certain amount of lines to be provided from an engine during init before the expected "uciok". *>
-const usz INIT_LINE_LIMIT = 3_000;
+const sz INIT_LINE_LIMIT = 3_000;
 
 <*
  The default delay to use when allowing the engine to initialize.
  This isn't a very important attribute; it mostly exists for engines which really need initial banners explicitly drained.
 *>
-const usz INIT_DEFAULT_DELAY = 1_000;
+const sz INIT_DEFAULT_DELAY = 1_000;
 
 
 enum OptionType : char
@@ -64,10 +64,9 @@ struct EngineOption (Printable)
 	List{String} combo;   // only used with COMBO types
 }
 
-fn usz? EngineOption.to_format(&self, Formatter* f) @dynamic => @pool()
+fn sz? EngineOption.to_format(&self, Formatter* f) @dynamic => @pool()
 {
-	usz n = f.printf("type %s", self.type.nameof.to_lower_tcopy())!;
-	return n;
+	return f.printf("type %s", OptionType::names[self.type].to_lower_tcopy())!;   // TODO: validate enum -> string is idiomatic
 }
 
 fn void EngineOption.set_default(&self)
@@ -98,7 +97,7 @@ struct Uci
 }
 
 
-macro Uci*? start(Allocator allocator, String engine_command, String[] args = {}, bool debug = false, OutStream debug_stream = io::stdout(), usz init_delay_ms = INIT_DEFAULT_DELAY)
+macro Uci*? start(Allocator allocator, String engine_command, String[] args = {}, bool debug = false, OutStream debug_stream = io::stdout(), sz init_delay_ms = INIT_DEFAULT_DELAY)
 {
 	Uci* new_uci = create(allocator, engine_command, args, debug, debug_stream)!;
 	return new_uci.init(init_delay_ms);
@@ -125,8 +124,8 @@ fn Uci*? create(Allocator allocator, String engine_command, String[] args = {}, 
 		foreach (arg : args) cmd.appendf(` '%s'`, arg.treplace(`'`, `'\''`));
 	};
 
-	Uci* new_uci = allocator::new(allocator, Uci);
-	defer catch allocator::free(allocator, new_uci);
+	Uci* new_uci = alloc::new(allocator, Uci);
+	defer catch alloc::free(allocator, new_uci);
 
 	*new_uci = {
 		.allocator = allocator,
@@ -144,7 +143,7 @@ fn Uci*? create(Allocator allocator, String engine_command, String[] args = {}, 
 	return new_uci;
 }
 
-fn Uci*? Uci.init(&self, usz init_delay_ms = INIT_DEFAULT_DELAY)
+fn Uci*? Uci.init(&self, sz init_delay_ms = INIT_DEFAULT_DELAY)
 {
 	if (self.initialized) return self;
 	self.out_mutex.init()!;
@@ -182,9 +181,9 @@ fn void Uci.free(&self)
 	self.engine.process.destroy();
 	self.out_mutex.destroy();
 	self.in_mutex.destroy();
-	allocator::free(self.allocator, self.engine.command);
-	allocator::free(self.allocator, self.engine.name);
-	allocator::free(self.allocator, self.engine.author);
+	alloc::free(self.allocator, self.engine.command);
+	alloc::free(self.allocator, self.engine.name);
+	alloc::free(self.allocator, self.engine.author);
 	if (self.position_str.len > 0) self.position_str.free(self.allocator);
 	self.engine.options.free();
 	mem::zero_volatile(@as_char_view(*self));
@@ -250,14 +249,14 @@ fn void? Uci.set_option(&self, String name, any value) => @pool()
 }
 
 <* Return how many lines are calculated each time the engine is asked. Defaults to 1 when the key isn't present, per the spec. *>
-fn usz Uci.pvs(&self) => types::any_to_int(self.engine.options["MultiPV"].value, usz) ?? 1;
+fn sz Uci.pvs(&self) => types::any_to_int(self.engine.options["MultiPV"].value, sz) ?? 1;
 
 fn void? Uci.drain(&self, char[]* into = null)
 {
 	char* store;
-	usz total_bytes;
-	if (into != null) store = allocator::new_array(self.allocator, char, 1023);
-	defer catch allocator::free(self.allocator, store);
+	sz total_bytes;
+	if (into != null) store = alloc::new_array(self.allocator, char, 1023);
+	defer catch alloc::free(self.allocator, store);
 	char[1024] tmp;
 	while (tmp[..] = 0, self.engine.process.read_stdout(&tmp, 1023)! > 0)
 	{
@@ -368,8 +367,8 @@ struct UciEvaluation
 	usz nps;
 	String move;
 	String[] continuation;
-	isz evaluation;
-	isz mate;
+	sz evaluation;
+	sz mate;
 }
 
 fn void UciEvaluation.free(&self, Allocator allocator)
@@ -390,8 +389,8 @@ struct UciResult
 
 fn void UciResult.free(&self)
 {
-	allocator::free(self.allocator, self.results);
-	if (self.best_move.len) allocator::free(self.allocator, self.best_move);
+	alloc::free(self.allocator, self.results);
+	if (self.best_move.len) alloc::free(self.allocator, self.best_move);
 }
 
 <* Return the best move from the set of engine results. *>
@@ -451,7 +450,7 @@ fn UciResult? Uci.go(&self, Allocator allocator, UciSearchParams params, bool* s
 	_dispatch_go(self, &params)!;
 	UciResult r = {
 		.allocator = allocator,
-		.results = allocator::new_array(allocator, UciEvaluation, self.pvs())[:self.pvs()],
+		.results = alloc::new_array(allocator, UciEvaluation, self.pvs())[:self.pvs()],
 	};
 	UciEvaluation eval;
 	bool stopped, error_set;
@@ -478,11 +477,11 @@ fn UciResultAsync*? Uci.go_async(&self, Allocator allocator, UciSearchParams par
 	// Note that an infinite search is ok in async mode, since there's a way to cancel it with `join`
 	if (allocator == tmem) abort("Cannot return async engine results with the temp allocator because it isn't thread-safe. Use a different allocator.");
 	_dispatch_go(self, &params)!;
-	UciResultAsync* r = allocator::new(allocator, UciResultAsync);
+	UciResultAsync* r = alloc::new(allocator, UciResultAsync);
 	*r = {
 		.allocator = allocator,
 		.uci = self,
-		.results = allocator::new_array(allocator, UciEvaluation, self.pvs())[:self.pvs()],
+		.results = alloc::new_array(allocator, UciEvaluation, self.pvs())[:self.pvs()],
 		.stop_flag = stop,
 		.searching = true,
 	};
@@ -558,13 +557,13 @@ import std::io, std::thread;
 macro any any_copy(Allocator allocator, #expr) @private @safemacro
 {
 	var v = #expr;
-	$if types::implements_copy($typeof(v)):
+	$if types::implements_copy($Typeof(v)):
 		void* new_copy = v.copy(allocator);
 	$else
-		void* new_copy = allocator::new(allocator, $typeof(v));
-		*($typeof(v)*)new_copy = v;
+		void* new_copy = alloc::new(allocator, $Typeof(v));
+		*($Typeof(v)*)new_copy = v;
 	$endif
-	return any_make(new_copy, $typeof(v));
+	return any_make(new_copy, $Typeof(v));
 }
 
 
@@ -573,7 +572,7 @@ fn void? Uci.parse_response(&self, String response)
 	if (!response.len) return;
 
 	String[] tokens = response.split(mem, " ", skip_empty: true);
-	defer allocator::free(mem, tokens);
+	defer alloc::free(mem, tokens);
 	foreach (&t : tokens) *t = t.trim();
 
 	if (!tokens.len) return;
@@ -623,8 +622,8 @@ fn void? Uci.parse_response(&self, String response)
 			String[] the_rest = tokens[idx..];
 			EngineOption eo = {
 				.type = of_type,
-				.min = any_copy(mem, isz.min),
-				.max = any_copy(mem, isz.max),
+				.min = any_copy(mem, sz::min),
+				.max = any_copy(mem, sz::max),
 			};
 			for (idx = 1; the_rest.len >= 2; idx = 1)
 			{
@@ -633,7 +632,7 @@ fn void? Uci.parse_response(&self, String response)
 					case "min":
 					case "max":   // should only be seen with SPIN types, always 'min ####' (2 tokens)
 						if (of_type != SPIN) return INVALID_OPTION~;
-						isz num = the_rest[1].to_integer(isz)!;
+						sz num = string::to_integer{sz}(the_rest[1])!;
 						if (the_rest[0] == "min") eo.min = any_copy(mem, num);
 						if (the_rest[0] == "max") eo.max = any_copy(mem, num);
 						idx = 2;
@@ -642,7 +641,7 @@ fn void? Uci.parse_response(&self, String response)
 						{
 							case BUTTON: return INVALID_OPTION~;
 							case CHECK: eo.def = any_copy(mem, the_rest[1] == "true");
-							case SPIN: eo.def = any_copy(mem, the_rest[1].to_integer(isz)!);
+							case SPIN: eo.def = any_copy(mem, string::to_integer{sz}(the_rest[1])!);
 							case COMBO:
 							case STRING:
 								DString collected_default;
@@ -731,7 +730,7 @@ fn String? Uci._scan_line_impl(&self, Allocator allocator, usz timeout = 0)
 *>
 fn void Uci.update_results(&self, UciEvaluation[] results, UciEvaluation* with_eval)
 {
-	with_eval.multipv = max(1, with_eval.multipv);
+	with_eval.multipv = with_eval.multipv < 1 ? 1 : with_eval.multipv;   // TODO: was `max(1, multipv)` but that broke in 0.8.0
 	if (with_eval.multipv > results.len) return;   // don't do anything if the PV is out-of-range
 	results[with_eval.multipv - 1].free(self.allocator);
 	results[with_eval.multipv - 1] = *with_eval;
@@ -774,7 +773,10 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 		$foreach $field : { "depth", "multipv", "seldepth", "time", "nodes", "nps" } :
 			if (id == $field)
 			{
-				if (catch @try(into.$field, tokens[1].to_integer(usz))) self.dlog("ERROR reading response field %s", $field);
+				if (catch @try(into.$field, string::to_integer{usz}(tokens[1])))
+				{
+					self.dlog("ERROR reading response field %s", $field);
+				}
 				tokens = tokens[1..];
 				continue;
 			}
@@ -797,11 +799,17 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 				if (tokens.len < 3) { self.dlog("ERROR getting 'score' info: not enough tokens."); continue; }
 				if (tokens[1] == "cp")   // centipawns
 				{
-					if (catch @try(into.evaluation, tokens[2].to_integer(usz))) self.dlog("ERROR reading evaluation score: not a valid unsigned integer.");
+					if (catch @try(into.evaluation, string::to_integer{sz}(tokens[2])))
+					{
+						self.dlog("ERROR reading evaluation score: not a valid unsigned integer.");
+					}
 				}
 				else if (tokens[1] == "mate")   // forced checkmate
 				{
-					if (catch @try(into.mate, tokens[2].to_integer(isz))) self.dlog("ERROR reading mate score: not a valid integer.");
+					if (catch @try(into.mate, string::to_integer{sz}(tokens[2])))
+					{
+						self.dlog("ERROR reading mate score: not a valid integer.");
+					}
 				}
 				else
 				{
@@ -822,11 +830,11 @@ fn String Uci.read_info(&self, UciEvaluation* into, bool* stop, bool* error) => 
 				}
 				into.move = tokens[0].copy(self.allocator);
 				tokens = tokens[1..]; // shift
-				usz cont_count;
+				sz cont_count;
 				for (; cont_count < tokens.len && _is_pure_coordinate(tokens[cont_count]); cont_count++);
 				if (cont_count)
 				{
-					into.continuation = allocator::new_array(self.allocator, String, cont_count);
+					into.continuation = alloc::new_array(self.allocator, String, cont_count);
 					foreach (i, token : tokens[:cont_count]) into.continuation[i] = token.copy(self.allocator);
 					tokens = tokens[cont_count..];
 				}

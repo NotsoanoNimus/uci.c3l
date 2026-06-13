@@ -18,7 +18,7 @@ fn void main(String[] args)
 	defer
 	{
 		leela.free();
-		allocator::free(mem, leela);
+		alloc::free(mem, leela);
 	}
 	leela.set_options({"Backend", &&"trivial"}, {"MultiPV", &&5})!!;
 	leela.new_game(fen: "8/2k2p2/2b3p1/P1p1Np2/1p3b2/1P1K4/5r2/R3R3 b - - 0 1")!!;
